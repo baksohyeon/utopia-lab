@@ -1,7 +1,7 @@
 # Dionz 팀에서 Utopia 쓰는 법
 
 `utopia-lab`(이 포크)의 `lab` 브랜치로 띄운 Utopia 위에 Dionz 문서 셋을 얹어 쓰는 방법이다.
-upstream 문서가 아니라 **우리 배포에만 해당하는 운영 메모**라 `docs/dionz/`에 둔다.
+**우리 배포에만 해당하는 운영 메모**다. upstream 문서와 섞이지 않게 `docs/dionz/`에 둔다.
 
 ## 무엇이 어디에 있나
 
