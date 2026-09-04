@@ -50,10 +50,29 @@ impl Default for AppConfig {
 
 impl AppConfig {
     pub fn load() -> anyhow::Result<Self> {
-        let cfg = Figment::from(Serialized::defaults(AppConfig::default()))
+        let cfg: AppConfig = Figment::from(Serialized::defaults(AppConfig::default()))
             .merge(Env::prefixed("UTOPIA_"))
             .extract()?;
-        Ok(cfg)
+        Ok(cfg.with_empty_as_unset())
+    }
+
+    /// An empty environment variable means "unset", not "set to nothing".
+    ///
+    /// docker-compose writes `${UTOPIA_MIGRATION_URL:-}` into the container, so
+    /// every deployment that does not opt into a separate migration role hands us
+    /// `Some("")` here. Read literally, that is a connection string, and sqlx
+    /// fails on it with "relative URL without a base" before the first log line.
+    /// The JWT secret had the same trap and was filtered by hand in `main.rs`;
+    /// this puts the rule in one place for every optional value.
+    fn with_empty_as_unset(self) -> Self {
+        fn non_empty(v: Option<String>) -> Option<String> {
+            v.filter(|s| !s.trim().is_empty())
+        }
+        Self {
+            migration_url: non_empty(self.migration_url),
+            jwt_secret: non_empty(self.jwt_secret),
+            ..self
+        }
     }
 }
 
@@ -61,5 +80,36 @@ impl AppConfig {
     /// 迁移连接串：未单独配置时用运行时那一个。
     pub fn migration_url(&self) -> &str {
         self.migration_url.as_deref().unwrap_or(&self.database_url)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `docker compose --profile app up -d` on a freshly built image died with
+    /// "relative URL without a base": compose passes `UTOPIA_MIGRATION_URL=` and
+    /// the empty string was taken as a connection string.
+    #[test]
+    fn an_empty_value_is_unset_not_an_empty_url() {
+        let cfg = AppConfig {
+            migration_url: Some(String::new()),
+            jwt_secret: Some("   ".into()),
+            ..AppConfig::default()
+        }
+        .with_empty_as_unset();
+        assert_eq!(cfg.migration_url, None);
+        assert_eq!(cfg.jwt_secret, None);
+        assert_eq!(cfg.migration_url(), cfg.database_url);
+    }
+
+    #[test]
+    fn a_real_value_survives() {
+        let cfg = AppConfig {
+            migration_url: Some("postgres://owner:pw@db:5432/utopia".into()),
+            ..AppConfig::default()
+        }
+        .with_empty_as_unset();
+        assert_eq!(cfg.migration_url(), "postgres://owner:pw@db:5432/utopia");
     }
 }
