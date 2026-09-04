@@ -1,25 +1,30 @@
 services:
   db:
-    # 拉不动 Docker Hub 时可用 UTOPIA_DB_IMAGE 覆盖为任何带 pgvector 的 PG16+ 镜像
+    # If Docker Hub is unreachable, UTOPIA_DB_IMAGE can point at any PG16+ image that ships pgvector
     image: ${UTOPIA_DB_IMAGE:-pgvector/pgvector:pg16}
     environment:
       POSTGRES_USER: utopia
       POSTGRES_PASSWORD: ${UTOPIA_DB_PASSWORD:-utopia}
       POSTGRES_DB: utopia
-      # 应用运行时用的受限角色口令。设了才建角色，不设则应用仍以 owner 身份跑。
+      # Password for the least-privilege role the application runs as. The role is only
+      # created when this is set; unset, the application keeps running as the owner.
       UTOPIA_APP_DB_PASSWORD: ${UTOPIA_APP_DB_PASSWORD:-}
     ports:
-      # 宿主机侧避开 5432：开发机上常有本地装的 PG 占着那个端口，撞上就是
-      # 起不来。而且撞端口的人恰恰用不了自己那个 PG——它多半没有 pgvector。
-      # 容器内仍是 5432（PG 标准，app 走 compose 网络连的就是它）。
+      # Stay off 5432 on the host: development machines often have a local Postgres
+      # holding that port, and a collision means the container never starts. The people
+      # who collide are exactly the ones who cannot use their own Postgres either, since
+      # it most likely lacks pgvector. Inside the container it is still 5432 (the Postgres
+      # standard, and what the app connects to over the compose network).
       #
-      # 只绑回环：这个映射纯粹是给本地开发用的（cargo run 时从宿主机连），
-      # 绑 0.0.0.0 等于把一个默认口令的数据库挂到公网。
+      # Loopback only: this mapping exists purely for local development (connecting from
+      # the host during cargo run). Binding 0.0.0.0 would put a database with a default
+      # password on the public internet.
       - "${UTOPIA_DB_BIND:-127.0.0.1:1517}:5432"
     volumes:
       - dbdata:/var/lib/postgresql/data
-      # 首次初始化时建受限角色；数据目录已存在的部署不会执行，需手动建一次
-      # （见 README 的升级说明）。权限由迁移 0031 授予，不在这里给。
+      # Creates the least-privilege role on first initialisation. Deployments whose data
+      # directory already exists never run it; create the role once by hand (see the
+      # upgrade notes in the README). Privileges are granted by migration 0031, not here.
       - ./docker/init-app-role.sh:/docker-entrypoint-initdb.d/10-app-role.sh:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U utopia -d utopia"]
@@ -27,38 +32,44 @@ services:
       timeout: 3s
       retries: 10
 
-  # 完整部署：docker compose --profile app up -d
-  # 本地开发只起 db，应用用 cargo run 跑
+  # Full deployment: docker compose --profile app up -d
+  # Local development starts only db and runs the application with cargo run
   #
-  # 这里只写 image 不写 build：两者并存时，本地没有镜像的 up 会去"构建"而不是
-  # "拉取"，预构建镜像就白发了。要从源码起，叠加 docker-compose.build.yml。
+  # `image` only, no `build`: with both present, an `up` on a machine without the image
+  # would build rather than pull, and the prebuilt image would have been published for
+  # nothing. To run from source, layer docker-compose.build.yml on top.
   app:
-    # 钉在已发布的具体版本。**这个默认值就是 README 承诺的那条命令**，
-    # 写一个不存在的标签，clone 下来第一步就是 manifest unknown。
-    # 所以撤掉一个版本时必须连它一起改——0.1.0 撤了，现在指向 rc。
-    # 转正之后改回 0.1.0（或改成 latest 让它自动跟随）。
+    # Pinned to a specific published version. **This default is the command the README
+    # promises**: point it at a tag that does not exist and the first thing after clone
+    # is manifest unknown. So retracting a release means changing this too: 0.1.0 was
+    # retracted and this now points at the rc. Change it back to 0.1.0 once that ships
+    # (or to latest to follow automatically).
     image: ${UTOPIA_IMAGE:-ghcr.io/deeplethe/utopia:0.1.0-rc4}
     profiles: ["app"]
     environment:
-      # 默认以 owner 身份运行。要启用受限角色（业务表随便读写、台账只增不改），
-      # 在 .env 里同时给出这两条——见 .env.example。分开写而不做条件拼接，
-      # 是因为那种嵌套替换没人读得懂，出错了也查不出来。
+      # Runs as the owner by default. To enable the least-privilege role (business tables
+      # read-write, ledger append-only), set both of these in .env; see .env.example. They
+      # are written out separately rather than assembled conditionally, because nobody can
+      # read that kind of nested substitution, and nobody can debug it when it goes wrong.
       UTOPIA_DATABASE_URL: ${UTOPIA_DATABASE_URL:-postgres://utopia:${UTOPIA_DB_PASSWORD:-utopia}@db:5432/utopia}
       UTOPIA_MIGRATION_URL: ${UTOPIA_MIGRATION_URL:-}
       UTOPIA_BIND_ADDR: 0.0.0.0:1516
-      # 留空：首次启动自动生成一条存进 deployment_settings。这里若给缺省值，
-      # 自动生成就永远走不到，所有部署又会共用同一个人人皆知的密钥。
+      # Left empty: the first start generates one and stores it in deployment_settings.
+      # A default here would mean the generation path is never reached, and every
+      # deployment would again share one key that everybody knows.
       UTOPIA_JWT_SECRET: ${UTOPIA_JWT_SECRET:-}
       UTOPIA_WEB_DIST: /app/web-dist
       UTOPIA_DATA_DIR: /app/data
-      # 连接池上限。缺省 32，与 worker 并发的缺省对齐；池子小于并发时症状是
-      # 请求变慢而不是报错说池子不够，所以调并发时别忘了它。
-      # 上调前先确认 Postgres 的 max_connections（默认 100）容得下。
+      # Connection pool cap. Default 32, aligned with the default worker concurrency. A pool
+      # smaller than the concurrency shows up as slow requests, not as an error saying the
+      # pool is too small, so remember this when tuning concurrency.
+      # Before raising it, check that Postgres's max_connections (default 100) has room.
       UTOPIA_DB_MAX_CONNECTIONS: ${UTOPIA_DB_MAX_CONNECTIONS:-32}
     volumes:
-      # 原始文件（files/）与全文索引（index/）。不挂出来的话，容器一重建
-      # 它们就没了，而库里的 documents 记录还在——引用全断且不报错。
-      # 备份 = 这个目录 + 数据库。
+      # Raw files (files/) and the full-text index (index/). Without this mount they are
+      # gone the moment the container is recreated, while the documents rows in the
+      # database remain: every reference broken, and nothing reports an error.
+      # Backup = this directory + the database.
       - ./data:/app/data
     ports:
       - "1516:1516"

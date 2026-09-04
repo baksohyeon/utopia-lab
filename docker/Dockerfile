@@ -1,4 +1,4 @@
-# ---- 前端构建 ----
+# ---- Frontend build ----
 FROM node:20-slim AS web
 WORKDIR /src
 RUN corepack enable
@@ -7,22 +7,24 @@ RUN pnpm install --frozen-lockfile
 COPY web/ ./
 RUN pnpm build
 
-# ---- 后端构建 ----
-# 发行版必须和运行阶段钉死在同一个：rust:1-slim 会跟着上游滚（现已是 trixie/glibc 2.41），
-# 编出的二进制便要求 GLIBC_2.38，而 bookworm 只有 2.36——镜像构建照样成功，
-# 容器一启动就 "version `GLIBC_2.38' not found"。
+# ---- Backend build ----
+# The distribution must be pinned to the same one as the runtime stage: rust:1-slim rolls
+# with upstream (now trixie / glibc 2.41), the binary it produces then requires GLIBC_2.38,
+# and bookworm only has 2.36. The image builds fine, and the container dies on start with
+# "version `GLIBC_2.38' not found".
 FROM rust:1-slim-bookworm AS build
 WORKDIR /src
 RUN apt-get update && apt-get install -y --no-install-recommends pkg-config && rm -rf /var/lib/apt/lists/*
 COPY Cargo.toml Cargo.lock ./
 COPY crates/ crates/
 COPY migrations/ migrations/
-# docs_corpus.rs 用 include_str! 把产品内文档编进二进制，所以它是后端的源码依赖，
-# 不只是前端资源——漏掉这行，cargo build 直接报 couldn't read。
+# docs_corpus.rs compiles the in-product docs into the binary with include_str!, so they are
+# a source dependency of the backend, not just a frontend asset. Drop this line and cargo
+# build fails outright with couldn't read.
 COPY web/src/docs/ web/src/docs/
 RUN cargo build --release -p utopia-server
 
-# ---- 运行 ----
+# ---- Runtime ----
 FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
