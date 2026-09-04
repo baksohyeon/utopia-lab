@@ -17,8 +17,25 @@ permissions:
   packages: write
 
 jobs:
+  # One job per architecture, each on a runner of that architecture.
+  #
+  # Building arm64 under QEMU on an amd64 runner was rejected earlier: a Rust
+  # release build with LTO takes over an hour emulated. Native arm runners
+  # (`ubuntu-24.04-arm`) remove that cost, so both architectures build and
+  # smoke-test in parallel at native speed. Each job pushes its image by digest
+  # only; the `manifest` job below stitches the digests into one tagged
+  # multi-arch image, so `docker pull` picks the right one on Apple Silicon and
+  # on x86 servers alike.
   image:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-latest
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
 
@@ -30,32 +47,32 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ghcr.io/${{ github.repository }}
-          tags: |
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            # **预发布不动 latest。** `{{major}}.{{minor}}` 那两条
-            # metadata-action 自己会跳过预发布，而这条 raw 不会——推一个
-            # `v0.1.0-rc1` 就把 latest 拖了过去，而那正好是 rc 要避免的事。
-            # 判据是 tag 里有没有连字符：semver 用它标预发布
-            type=raw,value=latest,enable=${{ github.ref_type == 'tag' && !contains(github.ref_name, '-') }}
-            type=raw,value=${{ inputs.tag }},enable=${{ github.event_name == 'workflow_dispatch' }}
+      # ghcr.io rejects uppercase in the repository path, and a fork owner's
+      # login may well contain one. metadata-action lowercases for us in the
+      # manifest job, but the digest push below names the image by hand.
+      - id: image
+        run: |
+          echo "name=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+          echo "arch=${PLATFORM#linux/}" >> "$GITHUB_OUTPUT"
+        env:
+          PLATFORM: ${{ matrix.platform }}
 
       # 先只 load 到本地跑一遍。"镜像构建成功"证明不了"容器能起来"——
       # glibc 跨发行版不匹配就是构建全绿、启动即死。
-      # amd64 only：arm64 得走 QEMU，Rust release + LTO 会拖到一小时以上。
+      #
+      # The cache scope is per platform: the two architectures share nothing
+      # in their compiled layers, and one shared scope would have each job
+      # evicting the other's cache on every run.
       - name: Build for smoke test
         uses: docker/build-push-action@v6
         with:
           context: .
           file: docker/Dockerfile
+          platforms: ${{ matrix.platform }}
           load: true
           tags: utopia:smoke
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=${{ matrix.platform }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.platform }}
 
       - name: Smoke test — boot it, migrate, register a user
         run: |
@@ -98,13 +115,89 @@ jobs:
           echo "smoke test passed: healthy, migrated, user registered, token issued"
 
       # 冒烟通过才发布。缓存已热，这步基本是瞬间完成。
-      - name: Push
+      #
+      # Pushed by digest, without a tag: the tags belong to the multi-arch
+      # manifest, not to either single-arch image. Tagging here would let a
+      # `latest` briefly point at whichever architecture finished first.
+      - name: Push by digest
+        id: push
         uses: docker/build-push-action@v6
         with:
           context: .
           file: docker/Dockerfile
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          platforms: ${{ matrix.platform }}
+          tags: ${{ steps.image.outputs.name }}
+          outputs: type=image,push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=gha,scope=${{ matrix.platform }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.platform }}
+
+      # The digest travels to the manifest job as an empty file named after it.
+      # That is the documented docker pattern: an artifact per architecture,
+      # `merge-multiple` below collects them into one directory.
+      - name: Export digest
+        run: |
+          mkdir -p /tmp/digests
+          digest="${{ steps.push.outputs.digest }}"
+          touch "/tmp/digests/${digest#sha256:}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: digest-${{ steps.image.outputs.arch }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  # Stitch the per-architecture digests into one tagged image. This is the
+  # only job that writes tags, so `needs: image` also means "no tag moves
+  # unless every architecture passed its smoke test".
+  manifest:
+    needs: image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: /tmp/digests
+          pattern: digest-*
+          merge-multiple: true
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            # **预发布不动 latest。** `{{major}}.{{minor}}` 那两条
+            # metadata-action 自己会跳过预发布，而这条 raw 不会——推一个
+            # `v0.1.0-rc1` 就把 latest 拖了过去，而那正好是 rc 要避免的事。
+            # 判据是 tag 里有没有连字符：semver 用它标预发布
+            type=raw,value=latest,enable=${{ github.ref_type == 'tag' && !contains(github.ref_name, '-') }}
+            type=raw,value=${{ inputs.tag }},enable=${{ github.event_name == 'workflow_dispatch' }}
+
+      - name: Create multi-arch manifest
+        working-directory: /tmp/digests
+        run: |
+          set -euo pipefail
+          image="ghcr.io/${GITHUB_REPOSITORY,,}"
+          docker buildx imagetools create \
+            $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
+            $(printf "${image}@sha256:%s " *)
+
+      # Fails if either platform is missing from the manifest list, which is
+      # the whole point of the exercise.
+      - name: Verify both architectures are in the manifest
+        run: |
+          set -euo pipefail
+          image="ghcr.io/${GITHUB_REPOSITORY,,}:${{ steps.meta.outputs.version }}"
+          docker buildx imagetools inspect "$image" | tee /tmp/inspect.txt
+          for p in linux/amd64 linux/arm64; do
+            grep -q "Platform: *$p" /tmp/inspect.txt || { echo "::error::$p missing from $image"; exit 1; }
+          done
