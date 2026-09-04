@@ -1,9 +1,11 @@
 #!/bin/bash
-# 创建应用运行时使用的受限角色。仅在数据目录为空的首次初始化时执行
-# （Postgres 官方镜像的 docker-entrypoint-initdb.d 约定），既有部署不受影响。
+# Creates the least-privilege role the application runs as. Runs only on the first
+# initialisation of an empty data directory (the official Postgres image's
+# docker-entrypoint-initdb.d convention), so existing deployments are unaffected.
 #
-# 权限不在这里给——由迁移 0031 授予，那样每次升级都能把新表补进来。
-# 这里只负责角色本身存在，且拥有一个可登录的口令。
+# Privileges are not granted here. Migration 0031 grants them, so that every upgrade
+# can extend them to new tables. This script is only responsible for the role existing
+# and having a password it can log in with.
 set -euo pipefail
 
 APP_PASSWORD="${UTOPIA_APP_DB_PASSWORD:-}"
