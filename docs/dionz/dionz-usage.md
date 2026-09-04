@@ -112,6 +112,15 @@ claude mcp add --transport http utopia-dionz \
 - **워커 수를 낮게 두면 파싱이 굶는다.** 추출 잡이 모델 순번을 기다리는 동안에도 워커 자리를 잡고 있어서, 워커 8에 추출 8개면 새 문서 파싱이 시작조차 못 한다. 32 이상으로 둔다. (upstream에도 있는 스케줄링 결함, 고칠 후보)
 - **`Failed`는 포기가 아니다.** 큐가 3회까지 백오프로 재시도한다. `Retry failed`는 3/3까지 갔을 때만 누른다. 진행 중에 누르면 같은 문서에 잡이 두 개 생긴다.
 - **`N dropped`는 대부분 필터다.** `not_an_entity_name`(문장을 엔티티로 내놓은 것), `object_missing`은 버리는 게 맞다. `truncated_reply`만 나쁜 신호다.
-- **맥이 잠들면 전부 멈춘다.** 긴 추출은 전원 연결하고 잠자기를 끈다.
+- **맥이 잠들면 전부 멈춘다.** Docker도 MLX도 로컬이다. 긴 추출은 전원 연결, 덮개 열어두기, 그리고 `caffeinate -dimsu &`. 실측: 잠자기 4시간 동안 LLM 호출 0건.
+- **잠자기 뒤 OrbStack이 멎을 수 있다.** 증상은 `docker ps`가 응답 없음, 앱 포트 죽음, MLX(호스트 프로세스)는 정상. 복구는 세 줄이고 볼륨의 데이터는 남는다.
+
+  ```bash
+  orbctl stop && orbctl start
+  docker compose --profile app up -d
+  curl -s http://localhost:1516/api/v1/health
+  ```
+
+  재시작하면 진행 중이던 잡은 고아로 회수되어 처음부터 다시 돈다.
 - **백업 = `data/` 디렉터리 + Postgres 볼륨.** 봉인 키(`data/secret.key`)가 없으면 저장된 자격증명을 못 읽는다.
 - **upstream은 v0.1, 마이그레이션은 전진만.** 업그레이드 전에 백업.
