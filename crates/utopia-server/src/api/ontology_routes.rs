@@ -562,6 +562,25 @@ pub async fn build_proposals(
         let kept: std::collections::HashSet<&str> = forms.iter().map(|f| f.form.as_str()).collect();
         misses.retain(|m| m.kind != "relation_type" || kept.contains(m.key.as_str()));
     }
+    // **Cap what one call asks the model to rule on.** Every wording below costs the
+    // model one answer, and the whole reply is one JSON document. On a 500-document
+    // corpus the unmatched pool reached 258 class wordings and 1,497 relation wordings;
+    // sent whole, the reply overran max_tokens and the parse died on "EOF while parsing
+    // a list", so the bootstrap adopted nothing at all — the ontology stayed empty while
+    // the graph grew to 4,000 untyped entities. The commonest wordings are the ones worth
+    // an answer first; the tail is still there for the next run (and for Suggest).
+    const MAX_PER_KIND: usize = 40;
+    forms.sort_by_key(|f| std::cmp::Reverse(f.fact_count));
+    forms.truncate(MAX_PER_KIND);
+    value_forms.sort_by_key(|f| std::cmp::Reverse(f.fact_count));
+    value_forms.truncate(MAX_PER_KIND / 2);
+    misses.sort_by_key(|m| std::cmp::Reverse(m.count));
+    let mut per_kind: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    misses.retain(|m| {
+        let n = per_kind.entry(m.kind.clone()).or_default();
+        *n += 1;
+        *n <= MAX_PER_KIND
+    });
     if misses.is_empty() && forms.is_empty() && value_forms.is_empty() {
         return Ok(json!({
             "entity_types": [], "relation_types": [], "attribute_types": [], "map_to": []
