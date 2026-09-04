@@ -24,8 +24,10 @@ import urllib.request
 from pathlib import Path
 
 DEFAULT_BASE = "http://localhost:1516"
-DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
-KO_DATE = re.compile(r"(\d{4})년 (\d{1,2})월 (\d{1,2})일")
+# Year floor: a runbook quoting an epoch timestamp (1970-01-01) must not become the
+# oldest document on the timeline. Nothing in these corpora predates 2020.
+DATE = re.compile(r"(?:20[2-9]\d)-\d{2}-\d{2}")
+KO_DATE = re.compile(r"(20[2-9]\d)년 (\d{1,2})월 (\d{1,2})일")
 
 # One entry per corpus. `scope` is (subdir, recursive, excluded-path regex); `time_keys`
 # is the frontmatter key that is "the document's time", in priority order. Both agreed
@@ -43,6 +45,18 @@ CORPORA = {
         ],
         # `created` is what the journals used before 35dd92f; harmless to keep
         "time_keys": ("decided_at", "created_at", "created", "updated_at"),
+    },
+    # dionz-ops is the master-ops layer: charter, decisions, lineage, journals (blame,
+    # retro, audit…), dispatch, handoffs, outbound drafts, runbooks. transcripts/ are raw
+    # agent session logs (200+ files) and stay out, like ai-lab's *.raw.md. Almost no
+    # frontmatter here, so doc_time comes from the date in the path (BLAME-2026-08-03-…,
+    # dispatch/2026-09-01/…) or the "일시: 2026-08-03" line that opens most entries.
+    "dionz-ops": {
+        "root": "/Users/cnai/dev/work/Dionz/dionz-ops",
+        "scope": [
+            ("docs", True, r"/(transcripts|reference/dz-bwh-patches)/"),
+        ],
+        "time_keys": ("decided_at", "created_at", "updated_at", "written", "updated"),
     },
     "ideation-v1": {
         "root": "/Users/cnai/dev/work/Dionz/ideation-v1",
@@ -66,7 +80,7 @@ def frontmatter(text: str) -> dict:
     out = {}
     for line in text[3:end].splitlines():
         m = re.match(r"^([A-Za-z_][\w-]*):\s*(.*?)\s*$", line)
-        if m and m.group(2) and not m.group(2).startswith(("[", "{", "-", "|", ">")):
+        if m and m.group(2) and not m.group(2).startswith(("[", "-", "|", ">")):
             out[m.group(1)] = m.group(2).strip("\"'")
     return out
 
@@ -79,7 +93,10 @@ def doc_time(fm: dict, path: Path, time_keys, body: str = ""):
         m = DATE.search(v)
         if m:
             return f"{m.group(0)}T00:00:00Z"
-    m = DATE.search(path.name)
+    m = DATE.search(fm.get("generated", "") + fm.get("verified", ""))
+    if m:
+        return f"{m.group(0)}T00:00:00Z"
+    m = DATE.search(path.as_posix())
     if m:
         return f"{m.group(0)}T00:00:00Z"
     # Notion mirrors in ideation-v1 often carry no date in frontmatter but open with
@@ -146,7 +163,7 @@ def main() -> int:
             # prefixed so two corpora can never collide on a relative path
             "external_id": f"{a.corpus}:{rel}",
         }
-        t = doc_time(frontmatter(text), p, corpus["time_keys"], text)
+        t = doc_time(frontmatter(text), p.relative_to(root), corpus["time_keys"], text)
         if t:
             payload["doc_time"] = t
         if a.dry_run:
