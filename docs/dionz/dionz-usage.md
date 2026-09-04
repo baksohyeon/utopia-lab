@@ -63,13 +63,35 @@ UTOPIA_SOURCE_ID=<소스 UUID> UTOPIA_INGEST_TOKEN=utp_... python3 scripts/push-
 
 ### 4. `/postmortem`과 Utopia를 같이 쓰는 가장 좋은 방법
 
-사후분석의 가치는 "같은 증상을 다음에 먼저 찾는 것"인데, README의 표는 손으로 유지하는 인덱스다. Utopia에 들어가면 그 표가 자동으로 검색되고 시간축에 놓인다. 권하는 순서는 이렇다.
+`/postmortem`은 디온즈 마스터의 스킬이다. 기술 사고(A 틀)와 조율 사고(B 틀)를 나누고, 예방 항목마다 **승격**(runbook·concepts·decisions·charter 중 집을 정해 실제로 그 파일을 고침)을 돌리고, **게이트 → 색인 → 커밋 → 푸시**까지가 제출이다. Utopia는 그 절차를 바꾸지 않는다. 네 지점에 끼어든다.
 
-1. **쓰기 전에 먼저 묻는다.** 뭔가 깨졋을 때 Chat에 증상을 그대로 적는다. "MLX 임베딩 서버가 안 뜬다", "funnel status는 on인데 밖에서 안 붙는다". 기존 사후분석 001, 003이 인용과 함께 나오면 새로 쓸 일이 없다.
-2. **쓸 때는 규약대로.** `NNN-YYYYMMDD-작성자-slug.md`, frontmatter에 `type: Postmortem`, `created_at`, `status`. 본문에는 오판한 가설과 기각 근거를 남긴다. 이게 추출기가 뽑는 "X라고 믿었다가 Y로 정정했다"는 인식 변경 사실이 된다.
-3. **커밋하고 푸시 스크립트.** 위 2번.
-4. **며칠 뒤 Review 탭.** 사후분석에서 나온 사실이 결정 스펙과 어긋나면 Conflicts에 뜬다. 예: serving-decision의 "사내 GPU는 성준님 몫"과 9/3 재배정 사실. 이게 잡히는지가 이 도구가 제값을 하는지의 시험이다.
-5. **승격은 사람이.** 사후분석에서 나온 규칙(예: "1차 자료가 0건이면 원인 절을 쓰지 않는다")을 runbook으로 올리는 판단은 계속 사람이 한다. Utopia는 "이 규칙이 어느 사건에서 나왔나"를 거슬러 보여주는 역할이다.
+**① 쓰기 전, "증거를 모은다" 단계.** 스킬은 `docs/transcripts/gen-NN/`과 `ctx search`를 쓰라고 한다. 여기에 Utopia **Chat**을 하나 더 얹는다. 증상을 그대로 적는다: "MLX 임베딩 서버가 안 뜬다", "funnel status는 on인데 밖에서 안 붙는다". 같은 증상의 사후분석(001, 003)이 있으면 인용과 함께 나오고, 그때는 새로 쓰지 않고 그 문서를 갱신하거나 `relations:`에 잇는다. README의 "같은 증상을 먼저 찾는다"가 표 눈으로 훑기에서 검색으로 바뀐다. 마스터가 스스로 못 하면 MCP `search_chunks`로 같은 것을 한다(5절).
+
+**② frontmatter.** 스킬 템플릿 그대로면 충분하다. Utopia가 읽는 것만 짚는다.
+
+| 키 | Utopia에서의 뜻 |
+|---|---|
+| `created_at`(또는 `date`) | 이 문서가 말하는 사실들의 유효 시작일. 없으면 파일명 `NNN-YYYYMMDD-…`에서 읽는다 |
+| `relations:` | 승격으로 이어진 규칙 파일 경로. 사후분석 → runbook 링크가 그래프 간선의 재료가 된다. **양방향으로 잇는다**는 스킬 규칙이 여기서 값을 한다 |
+| `workstream:` | `poc-N`. 사건이 어느 PoC의 것인지 그래프에서 묶인다 |
+| `status:` | `active`만 들어간다고 보면 된다. `temp/` 초안은 아예 수집하지 않는다 |
+
+본문에서는 **가설 표(H1·H2·H3)와 "검증하지 않은 것"**이 가장 가치 있는 부분이다. "H2라고 믿었다가 진단 3단계에서 기각했다"가 그대로 인식 변경 사실(믿었다 → 정정했다)로 뽑히고, Graph의 엔티티 히스토리에 두 시점으로 남는다. 다른 검색 도구와 이 도구가 갈리는 지점이다.
+
+**③ 제출 뒤.** 스킬의 4단계(게이트, 색인, 커밋, 푸시)가 끝나면 푸시 스크립트를 한 번 돌린다.
+
+```bash
+UTOPIA_SOURCE_ID=01a06b4b-4100-7a80-9c36-5365a4244cab UTOPIA_INGEST_TOKEN=utp_... \
+  python3 scripts/push-ai-lab.py --corpus ai-lab
+```
+
+새 사후분석만 `created`, 나머지는 `unchanged`. 승격으로 `dionz-ops/docs/runbooks/*.md`를 함께 고쳤으면 `--corpus dionz-ops`도 돌린다. 바뀐 runbook은 `updated`로 새 버전이 쌓이고, **"이 규칙은 사후분석 NNN에서 나왔다"**가 두 문서 사이의 관계로 남는다. blame-agent 문서(`dionz-ops/docs/journal/blame/`)도 같은 소스에 이미 들어가니 "같은 사건에 둘 다 쓴" 경우 두 문서가 같은 엔티티에 붙는다.
+
+이 두 줄은 각 레포의 post-commit 훅에 넣어도 된다. 토큰은 환경변수나 키체인으로만.
+
+**④ 며칠 뒤 Review.** 사후분석이 낸 사실이 결정 스펙과 어긋나면 **Conflicts**에 올라온다. 지금 걸어둔 시험이 정확히 이것이다: `serving-decision.md`의 "사내 GPU는 성준님 몫"과 9/3 재배정(DZ-40d). Conflicts에서 어느 쪽이 참인지 고르면 옛 사실은 닫히고 원장에 누가 언제 판정했는지 남는다. 승격의 마지막 판단(charter, 부팅 대조 집합은 오너 승인)은 계속 사람이 하고, Utopia는 "이 규칙이 어느 사건에서 나왔나"를 거슬러 보여주는 쪽이다.
+
+**하지 말 것.** Utopia에 사후분석을 직접 쓰지 않는다. 정본은 ai-lab이고 Utopia는 거기서 읽는다. `remember` 툴로 사건을 메모하는 건 되지만 그건 "등을 두드려 달라는 문장"이고 사후분석이 아니다.
 
 ### 5. Claude Code에서 직접
 

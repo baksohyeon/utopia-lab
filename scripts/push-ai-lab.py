@@ -44,7 +44,7 @@ CORPORA = {
             ("docs/decisions", False, r"/README\.md$"),
         ],
         # `created` is what the journals used before 35dd92f; harmless to keep
-        "time_keys": ("decided_at", "created_at", "created", "updated_at"),
+        "time_keys": ("decided_at", "created_at", "created", "date", "updated_at"),
     },
     # dionz-ops is the master-ops layer: charter, decisions, lineage, journals (blame,
     # retro, audit…), dispatch, handoffs, outbound drafts, runbooks. transcripts/ are raw
