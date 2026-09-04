@@ -5,8 +5,10 @@ Read-only on ai-lab, stdlib only, no state file: Utopia already answers
 `unchanged` for identical content, so every run simply pushes everything and
 lets the server decide what is new. Identity is the repo-relative path.
 
-    UTOPIA_INGEST_TOKEN=utp_... UTOPIA_SOURCE_ID=<uuid> python3 scripts/push-ai-lab.py
-    python3 scripts/push-ai-lab.py --dry-run          # list files and doc_time, no network
+    UTOPIA_INGEST_TOKEN=utp_... UTOPIA_SOURCE_ID=<uuid> python3 scripts/push-ai-lab.py --corpus ai-lab
+    python3 scripts/push-ai-lab.py --corpus ideation-v1 --dry-run   # list files and doc_time, no network
+
+Each corpus is its own Utopia API source (own token, own source id).
 
 Scope and doc_time fields were agreed with the ai-lab maintainer on 2026-09-04:
 journal (not *.raw.md), postmortems, decisions (not README). Registry YAML is an
@@ -21,19 +23,36 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-DEFAULT_ROOT = "/Users/cnai/dev/work/Dionz/ai-lab"
 DEFAULT_BASE = "http://localhost:1516"
-
-# (directory, recursive, excluded basename regex)
-SCOPE = [
-    ("docs/journal/2026", True, r"\.raw\.md$"),
-    ("docs/journal/postmortem", False, r"^README\.md$"),
-    ("docs/decisions", False, r"^README\.md$"),
-]
-# Which frontmatter key is "the document's time", in priority order. `created`
-# is what the journals actually use; the rest per the maintainer's answer.
-TIME_KEYS = ("decided_at", "created_at", "created", "updated_at")
 DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
+KO_DATE = re.compile(r"(\d{4})년 (\d{1,2})월 (\d{1,2})일")
+
+# One entry per corpus. `scope` is (subdir, recursive, excluded-path regex); `time_keys`
+# is the frontmatter key that is "the document's time", in priority order. Both agreed
+# with the ai-lab maintainer on 2026-09-04; ideation-v1 is an Obsidian vault whose
+# Notion mirror (_Source-Notion) is the body of fact and _Knowledge the interpretation.
+# Hub pages, Dataview dashboards, templates, prompts, sync logs and _Active/ (mirrors
+# ai-lab, would double-ingest) are out.
+CORPORA = {
+    "ai-lab": {
+        "root": "/Users/cnai/dev/work/Dionz/ai-lab",
+        "scope": [
+            ("docs/journal/2026", True, r"\.raw\.md$"),
+            ("docs/journal/postmortem", False, r"/README\.md$"),
+            ("docs/decisions", False, r"/README\.md$"),
+        ],
+        # `created` is what the journals used before 35dd92f; harmless to keep
+        "time_keys": ("decided_at", "created_at", "created", "updated_at"),
+    },
+    "ideation-v1": {
+        "root": "/Users/cnai/dev/work/Dionz/ideation-v1",
+        "scope": [
+            ("dionz/_Source-Notion", True, r"/(_deleted|_unfiled)/|/_sync-log\.md$"),
+            ("dionz/_Knowledge", True, r"/_loop/"),
+        ],
+        "time_keys": ("updated_at", "created_at"),
+    },
+}
 
 
 def frontmatter(text: str) -> dict:
@@ -52,29 +71,40 @@ def frontmatter(text: str) -> dict:
     return out
 
 
-def doc_time(fm: dict, path: Path):
+def doc_time(fm: dict, path: Path, time_keys, body: str = ""):
     """First matching field, else a date in the filename. Sent as UTC midnight so a
     UTC-day rounding on the server cannot shift the date (KST midnight would)."""
-    for k in TIME_KEYS:
+    for k in time_keys:
         v = fm.get(k, "")
         m = DATE.search(v)
         if m:
             return f"{m.group(0)}T00:00:00Z"
     m = DATE.search(path.name)
-    return f"{m.group(0)}T00:00:00Z" if m else None
+    if m:
+        return f"{m.group(0)}T00:00:00Z"
+    # Notion mirrors in ideation-v1 often carry no date in frontmatter but open with
+    # a line like "업데이트: 2026년 6월 29일 오후 2:08". Read the first lines of the body
+    # for that before giving up; no date at all means the server uses ingestion time.
+    head = "\n".join(body.splitlines()[:40])
+    m = KO_DATE.search(head) or DATE.search(head)
+    if not m:
+        return None
+    if m.re is KO_DATE:
+        return f"{m.group(1)}-{int(m.group(2)):02d}-{int(m.group(3)):02d}T00:00:00Z"
+    return f"{m.group(0)}T00:00:00Z"
 
 
-def files(root: Path):
-    for sub, recursive, excl in SCOPE:
+def files(root: Path, scope):
+    for sub, recursive, excl in scope:
         base = root / sub
         if not base.is_dir():
             print(f"warn: missing {base}", file=sys.stderr)
             continue
         it = base.rglob("*.md") if recursive else base.glob("*.md")
         for p in sorted(it):
-            if ".orca" in p.parts:
+            if ".orca" in p.parts or ".obsidian" in p.parts:
                 continue
-            if excl and re.search(excl, p.name):
+            if excl and re.search(excl, "/" + p.relative_to(root).as_posix()):
                 continue
             yield p
 
@@ -92,11 +122,13 @@ def push(base: str, source_id: str, token: str, payload: dict) -> str:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--root", default=os.environ.get("AI_LAB_ROOT", DEFAULT_ROOT))
+    ap.add_argument("--corpus", choices=sorted(CORPORA), default="ai-lab")
+    ap.add_argument("--root", help="override the corpus root")
     ap.add_argument("--base", default=os.environ.get("UTOPIA_BASE", DEFAULT_BASE))
     ap.add_argument("--dry-run", action="store_true")
     a = ap.parse_args()
-    root = Path(a.root)
+    corpus = CORPORA[a.corpus]
+    root = Path(a.root or corpus["root"])
 
     token = os.environ.get("UTOPIA_INGEST_TOKEN", "")
     source_id = os.environ.get("UTOPIA_SOURCE_ID", "")
@@ -105,15 +137,16 @@ def main() -> int:
         return 2
 
     counts: dict[str, int] = {}
-    for p in files(root):
+    for p in files(root, corpus["scope"]):
         text = p.read_text(encoding="utf-8")
         rel = p.relative_to(root).as_posix()
         payload = {
             "filename": p.name,
             "content": text,
-            "external_id": rel,
+            # prefixed so two corpora can never collide on a relative path
+            "external_id": f"{a.corpus}:{rel}",
         }
-        t = doc_time(frontmatter(text), p)
+        t = doc_time(frontmatter(text), p, corpus["time_keys"], text)
         if t:
             payload["doc_time"] = t
         if a.dry_run:
