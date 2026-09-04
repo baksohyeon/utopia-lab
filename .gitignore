@@ -14,6 +14,8 @@ data/
 /docs/*
 !/docs/decisions/
 !/docs/pipeline.md
+# utopia-lab (downstream): the Dionz team's operating notes live in the repo too
+!/docs/dionz/
 .claude/
 
 # 测量台与临时脚本的运行产物。**按前缀整段忽略**：
