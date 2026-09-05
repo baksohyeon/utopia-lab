@@ -373,7 +373,7 @@ fn close_brackets(head: &str) -> Option<String> {
 ///
 /// 模型写到一半没了（撞上 max_tokens）时，前面那些对象是完整且正确的。
 /// 整块作废等于把已经抽对的十几条事实一起扔掉——实测 246 次调用里 4 次是这种。
-fn repair_truncated(json: &str) -> Option<String> {
+pub fn repair_truncated(json: &str) -> Option<String> {
     let mut cut = json.len();
     for _ in 0..64 {
         let idx = json[..cut].rfind('}')?;

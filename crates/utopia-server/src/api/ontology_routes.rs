@@ -831,8 +831,20 @@ pub async fn build_proposals(
         .await
         .map_err(AppError::Other)?;
     let block = utopia_extract::json_block(&reply).map_err(AppError::Other)?;
-    let mut proposals: serde_json::Value =
-        serde_json::from_str(&block).map_err(|e| AppError::Other(e.into()))?;
+    // A cut-off reply keeps what was complete. The model writes a paragraph per wording
+    // and this corpus pushed it past max_tokens twice in a row (parse died at line 116,
+    // then 247); with all-or-nothing parsing the bootstrap adopted nothing while 4,000
+    // untyped entities piled up. entity_types comes first in the skeleton, so the classes
+    // survive even when the tail is lost; the rest waits for the next run.
+    let mut proposals: serde_json::Value = match serde_json::from_str(&block) {
+        Ok(v) => v,
+        Err(e) => {
+            let repaired = utopia_extract::repair_truncated(&block)
+                .ok_or_else(|| AppError::Other(anyhow::anyhow!("{e}")))?;
+            tracing::warn!(%kb_id, "ontology proposal reply was cut off; keeping the complete entries");
+            serde_json::from_str(&repaired).map_err(|e| AppError::Other(e.into()))?
+        }
+    };
     resolve_map_targets(&mut proposals, &by_name, &kind_of_key);
     // 说法归哪一档，服务端说了算——它手里有事实。实测模型会把同一个
     // \"founded_in\" 既提成关系又提成属性，两条都采纳就是同一批事实被抢两次
