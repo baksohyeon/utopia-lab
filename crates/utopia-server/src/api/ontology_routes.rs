@@ -569,7 +569,7 @@ pub async fn build_proposals(
     // a list", so the bootstrap adopted nothing at all — the ontology stayed empty while
     // the graph grew to 4,000 untyped entities. The commonest wordings are the ones worth
     // an answer first; the tail is still there for the next run (and for Suggest).
-    const MAX_PER_KIND: usize = 40;
+    const MAX_PER_KIND: usize = 15;
     forms.sort_by_key(|f| std::cmp::Reverse(f.fact_count));
     forms.truncate(MAX_PER_KIND);
     value_forms.sort_by_key(|f| std::cmp::Reverse(f.fact_count));
